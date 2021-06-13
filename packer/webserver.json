@@ -1,0 +1,49 @@
+{
+    "builders": [
+        {
+            "ami_description": "{{ user `ami_description` }}",
+            "ami_name": "{{ user `image_name`}}-{{isotime | clean_resource_name}}",
+            "subnet_id": "{{ user `subnet_id` }}",
+            "associate_public_ip_address": true,
+            "instance_type": "t2.micro",
+            "region": "{{ user `region_name` }}",
+            "run_tags": {
+                "Name": "{{ user `image_name` }}"
+            },
+            "access_key": "{{ user `iamkey` }}",
+            "secret_key": "{{ user `iamsecret` }}",
+            "token": "{{ user `iamtoken` }}",
+            "source_ami": "{{ user `source_ami_id` }}",
+            "ssh_pty": "true",
+            "ssh_username": "{{ user `ssh_user_name` }}",
+            "tags": {
+                "ImageName": "{{ user `image_name` }}",
+                "Date": "{{isotime}}",
+                "Name": "{{ user `image_name`}}-{{isotime | clean_resource_name}}",
+                "OS_Distro": "{{ user `os_distro`}}"
+            },
+            "type": "amazon-ebs"
+        }
+    ],
+    "variables": {
+        "image_name": "{{ env `IMAGE_NAME` }}",
+        "iamkey": "{{ env `AWS_ACCESS_KEY_ID` }}",
+        "iamsecret": "{{ env `AWS_SECRET_ACCESS_KEY` }}",
+        "iamtoken": "{{env `AWS_SESSION_TOKEN` }}"
+    },
+    "post-processors": [
+        {
+            "output": "manifest.json",
+            "strip_path": true,
+            "type": "manifest"
+        }
+    ],
+    "provisioners": [
+        {
+            "type": "shell",
+            "inline": [
+                "sudo yum update"
+            ]
+        }
+    ]
+}

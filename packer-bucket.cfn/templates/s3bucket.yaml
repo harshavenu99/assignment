@@ -1,0 +1,40 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "S3 bucket 1.0"
+Parameters:
+  BucketName:
+    Type: String
+    Description: Name of the S3 bucket
+    Default: ""
+Conditions:
+  BucketNameDefined: !Not
+    - !Equals
+      - !Ref BucketName
+      - ""
+  BucketNameNotDefined: !Equals
+    - !Ref BucketName
+    - ""
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Condition: BucketNameDefined
+    Properties:
+      BucketName: !Ref BucketName
+  S3LoggingBucket:
+    Type: AWS::S3::Bucket
+    Condition: BucketNameNotDefined
+Outputs:
+  S3Bucket:
+    Description: S3 Bucket
+    Value: !Ref S3Bucket
+    Condition: BucketNameDefined
+    Export:
+      Name: !Sub ${AWS::StackName}
+  S3BucketArn:
+    Description: S3 Bucket Arn
+    Value: !GetAtt S3Bucket.Arn
+    Condition: BucketNameDefined
+  AccessBucket:
+    Description: S3 Bucket
+    Value: !Ref S3LoggingBucket
+    Condition: BucketNameNotDefined

@@ -1,0 +1,317 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  Appname:
+    Description: "Name of the app"
+    Type: String
+    Default: webserver
+
+  VPC:
+    Description: "The VPC stack to pull imports from."
+    Type: String
+    Default: ""
+
+  DesiredInstances:
+    Description: "The amount to set at deploy"
+    Type: String
+
+  MaxInstances:
+    Description: "The maximum amount to set at deploy"
+    Type: String
+
+  MinimumInstances:
+    Description: "The minimum amount to set at deploy"
+    Type: String
+
+  InstanceSize:
+    Type: String
+    Default: t2.small
+
+  BaseAmi:
+    Description: "The ami to use"
+    Type: String
+
+  SubnetsPrivate:
+    Description: "Private Subnet"
+    Type: String
+
+  SubnetsPublic:
+    Description: "Public Subnet"
+    Type: String
+
+  SshKey:
+    Description: "The aws keypair"
+    Type: String
+
+  LogRetention:
+    Description: "Retention Period (in days) of app Logs"
+    Type: Number
+    Default: 30
+
+  BastionSSHSG:
+    Description: "The SSH SG of the Bastion"
+    Type: String
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref Appname
+      RetentionInDays: !Ref LogRetention
+
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
+      Policies:
+        - PolicyName: web-application
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:CreateLogGroup
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                  - cloudwatch:PutMetricData
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:ListMetrics
+                  - ec2:DescribeTags
+                Resource: "*"
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2Role
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref DesiredInstances
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        MinInstancesInService: 1
+        MinSuccessfulInstancesPercent: 100
+        PauseTime: PT10M
+        SuspendProcesses:
+          - HealthCheck
+          - ReplaceUnhealthy
+          - AZRebalance
+          - AlarmNotification
+          - ScheduledActions
+        WaitOnResourceSignals: true
+    Properties:
+      HealthCheckGracePeriod: 600
+      HealthCheckType: ELB
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+      VPCZoneIdentifier:
+        - Fn::Select:
+            - 0
+            - !Split
+              - ","
+              - !Ref SubnetsPrivate
+        - Fn::Select:
+            - 1
+            - !Split
+              - ","
+              - !Ref SubnetsPrivate
+        - Fn::Select:
+            - 2
+            - !Split
+              - ","
+              - !Ref SubnetsPrivate
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: !Ref MinimumInstances
+      MaxSize: !Ref MaxInstances
+      DesiredCapacity: !Ref DesiredInstances
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}"
+          PropagateAtLaunch: true
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /root/bootstrap.sh:
+              content: |
+                yum install -y docker
+                systemctl enable docker
+                systemctl start docker
+                docker run -p 80:80 --name nginx -d  harshavenu99/nginx
+              mode: "000700"
+              owner: root
+              group: root
+          commands:
+            bootstrap_setup:
+              command: "./bootstrap.sh"
+              cwd: "/root"
+    Properties:
+      LaunchTemplateData:
+        IamInstanceProfile:
+          Arn: !GetAtt EC2InstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref WebServerSecurityGroup
+        InstanceInitiatedShutdownBehavior: terminate
+        KeyName: !Ref SshKey
+        ImageId: !Ref BaseAmi
+        InstanceType: !Ref InstanceSize
+        UserData:
+          Fn::Base64:
+            Fn::Sub: |
+              #cloud-config
+              runcmd:
+              - while ! curl --connect-timeout 1 -s http://169.254.169.254/ > /dev/null; do echo "-- waiting for instance network to wake up ..."; done
+              - hostnamectl set-hostname webserver$(openssl rand -base64 6 | tr '[:upper:]' '[:lower:]')
+              - /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource LaunchTemplate --region ${AWS::Region}
+              - /opt/aws/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource AutoScalingGroup --region ${AWS::Region}
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VPC
+      Port: 80
+      Protocol: HTTP
+      Matcher:
+        HttpCode: 200-299
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /index.html
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 30
+
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: 50
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Subnets:
+        Fn::Split:
+          - ","
+          - !Ref SubnetsPublic
+
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Cooldown: 180
+      ScalingAdjustment: 1
+
+  ScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Cooldown: 1200
+      ScalingAdjustment: -1
+
+  CPUHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "CPU High alarm for ${AWS::StackName}"
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: "180"
+      EvaluationPeriods: "2"
+      Threshold: "75"
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      AlarmActions:
+        - Ref: ScaleUpPolicy
+
+  CPULowAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "CPU Low alarm for ${AWS::StackName}"
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: "180"
+      EvaluationPeriods: "2"
+      Threshold: "15"
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      AlarmActions:
+        - Ref: ScaleDownPolicy
+
+  ALBSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "ALB-SG"
+      VpcId: !Ref VPC
+
+  ALBSecurityGroupInHttpWorld:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    Properties:
+      GroupId: !Ref ALBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp: "0.0.0.0/0"
+
+  WebServerSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "WebServerSG"
+      VpcId: !Ref VPC
+
+  WebServerSecurityGroupInHttpWorld:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    Properties:
+      GroupId: !Ref WebServerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !Ref ALBSecurityGroup
+
+  WebServerSecurityGroupInSSHFromBastion:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    Properties:
+      GroupId: !Ref WebServerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref BastionSSHSG

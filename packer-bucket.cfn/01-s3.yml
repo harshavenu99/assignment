@@ -1,0 +1,9 @@
+sys_path: ./
+namespace: ledn-${environment}
+cfngin_bucket: stacker-harsha-ledn
+
+stacks:
+  packer-bucket:
+    variables:
+      BucketName: ledn-${environment}-bucket
+    template_path: templates/s3bucket.yaml

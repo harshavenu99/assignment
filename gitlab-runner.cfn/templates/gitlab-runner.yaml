@@ -1,0 +1,151 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  SubnetAPrivate:
+    Description: List of public subnet IDs for load balancer
+    Type: "String"
+
+  GitLabToken:
+    Description: "GitLab Token"
+    Type: String
+
+  DesiredInstances:
+    Description: "The amount to set at deploy"
+    Type: String
+    Default: "1"
+
+  MaxInstances:
+    Description: "The maximum amount to set at deploy"
+    Type: String
+    Default: "1"
+
+  MinimumInstances:
+    Description: "The minimum amount to set at deploy"
+    Type: String
+    Default: "1"
+
+  InstanceSize:
+    Type: String
+    Default: t2.medium
+
+  BaseAmi:
+    Description: "Region specific image from the Parameter Store"
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2"
+
+  SshKey:
+    Description: "The aws keypair"
+    Type: String
+
+Resources:
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2Role
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref DesiredInstances
+        Timeout: PT15M
+    Properties:
+      HealthCheckGracePeriod: 600
+      HealthCheckType: EC2
+      VPCZoneIdentifier:
+        - !Ref SubnetAPrivate
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: !Ref MinimumInstances
+      MaxSize: !Ref MaxInstances
+      DesiredCapacity: !Ref DesiredInstances
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}"
+          PropagateAtLaunch: true
+        - Key: Service
+          Value: "gitlab-runner"
+          PropagateAtLaunch: true
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /root/bootstrap.sh:
+              content: !Sub |
+                # Download the binary for your system
+                curl -L --output /usr/local/bin/gitlab-runner \
+                     https://gitlab-runner-downloads.s3.amazonaws.com/latest/binaries/gitlab-runner-linux-amd64
+
+                # Give it permissions to execute
+                chmod +x /usr/local/bin/gitlab-runner
+
+                # Create a GitLab CI user
+                useradd --comment 'GitLab Runner' --create-home gitlab-runner --shell /bin/bash
+
+                # Install and run as service
+                gitlab-runner install --user=gitlab-runner --working-directory=/home/gitlab-runner
+                gitlab-runner start
+
+                # Install & start docker
+                yum install -y docker
+                systemctl enable docker
+                systemctl start docker
+
+                # Register the runner
+                gitlab-runner register --url https://gitlab.com/ \
+                    --non-interactive \
+                    --executor "docker" \
+                    --docker-image ubuntu:latest \
+                    --description "docker-runner" \
+                    --locked="false" \
+                    --registration-token ${GitLabToken}
+
+              mode: "000700"
+              owner: root
+              group: root
+          commands:
+            bootstrap_setup:
+              command: "./bootstrap.sh"
+              cwd: "/root"
+    Properties:
+      LaunchTemplateName: !Sub "${AWS::StackName}-LT"
+      LaunchTemplateData:
+        IamInstanceProfile:
+          Arn: !GetAtt EC2InstanceProfile.Arn
+        InstanceInitiatedShutdownBehavior: terminate
+        KeyName: !Ref SshKey
+        ImageId: !Ref BaseAmi
+        InstanceType: !Ref InstanceSize
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeType: gp3
+              VolumeSize: 100
+        UserData:
+          Fn::Base64:
+            Fn::Sub: |
+              #cloud-config
+              runcmd:
+              - while ! curl --connect-timeout 1 -s http://169.254.169.254/ > /dev/null; do echo "-- waiting for instance network to wake up ..."; done
+              - /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource LaunchTemplate --region ${AWS::Region}
+              - /opt/aws/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource AutoScalingGroup --region ${AWS::Region}

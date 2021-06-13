@@ -1,0 +1,26 @@
+sys_path: ./
+namespace: ledn-${environment}
+cfngin_bucket: stacker-harsha-ledn
+
+pre_build:
+  - path: hooks.get_ami.ami
+    required: true
+    data_key: ami
+    args:
+      s3_bucket: ${xref ledn-${environment}-packer-bucket::S3Bucket}
+
+stacks:
+  webserver:
+    template_path: templates/webserver.yml
+    variables:
+      BaseAmi: ${hook_data ami.ami}
+      HealthCheckType: EC2
+      InstanceType: t2.micro
+      SshKey: harsha-ledn-kp
+      MinimumInstances: 2
+      MaxInstances: 4
+      DesiredInstances: 2
+      SubnetsPrivate: ${rxref ledn-${environment}-core::SubnetsPrivate}
+      SubnetsPublic: ${rxref ledn-${environment}-core::SubnetsPublic}
+      VPC: ${rxref ledn-${environment}-core::VPC}
+      BastionSSHSG: ${rxref ledn-${environment}-bastion::SSHSecurityGroup}

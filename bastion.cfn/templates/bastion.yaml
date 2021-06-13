@@ -1,0 +1,63 @@
+Parameters:
+  InstanceSize:
+    Type: String
+    Default: t2.small
+  BaseAmi:
+    Description: "The ami to use"
+    Type: String
+  SshKey:
+    Description: "The aws keypair"
+    Type: String
+  VPC:
+    Description: "VPC"
+    Type: String
+  SubnetAPublic:
+    Description: "VPC"
+    Type: String
+Resources:
+  Bastion:
+    Type: AWS::EC2::Instance
+    Properties:
+      UserData: !Base64
+        Fn::Join:
+          - ""
+          - [IPAddress=, !Ref "IPAddress"]
+      InstanceType: !Ref "InstanceSize"
+      KeyName: !Ref "SshKey"
+      ImageId: !Ref "BaseAmi"
+      Tags:
+        - Key: Name
+          Value: "Bastion"
+      SubnetId: !Ref SubnetAPublic
+      SecurityGroupIds:
+        - !Ref SSHSecurityGroup
+  IPAddress:
+    Type: AWS::EC2::EIP
+  IPAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref "Bastion"
+      EIP: !Ref "IPAddress"
+  SSHSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "ALB-SG"
+      VpcId: !Ref VPC
+  SSHIngress:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    Properties:
+      GroupId: !Ref SSHSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: "0.0.0.0/0"
+Outputs:
+  InstanceId:
+    Description: InstanceId of the newly created EC2 instance
+    Value: !Ref "Bastion"
+  InstanceIPAddress:
+    Description: IP address of the newly created EC2 instance
+    Value: !Ref "IPAddress"
+  SSHSecurityGroup:
+    Description: InstanceId of the newly created EC2 instance
+    Value: !Ref "SSHSecurityGroup"

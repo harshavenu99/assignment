@@ -1,0 +1,9 @@
+{
+     "ssh_user_name": "ec2-user",
+     "source_ami_id": "ami-0800fc0fa715fdcfe",
+     "region_name": "us-west-2",
+     "ami_description": "Webserver Image",
+     "os_distro": "Amazon Linux",
+     "image_name": "webserver",
+     "subnet_id": "subnet-0b50ad41"
+}

@@ -1,0 +1,12 @@
+deployments:
+  - modules:
+      - network.cfn
+      - packer-bucket.cfn
+      - webserver.cfn
+      - bastion.cfn
+      - gitlab-runner.cfn
+    name: Infrastructure
+    regions:
+      - us-west-2
+    account-id:
+      myaccount: 
